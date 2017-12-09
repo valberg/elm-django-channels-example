@@ -1,0 +1,4 @@
+*.sw*
+elm-stuff/
+__pycache__/
+db.sqlite3
