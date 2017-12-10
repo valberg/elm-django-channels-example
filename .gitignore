@@ -2,3 +2,4 @@
 elm-stuff/
 __pycache__/
 db.sqlite3
+frontend/index.html
