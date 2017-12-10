@@ -1,17 +1,14 @@
 module Main exposing (..)
 
-import DjangoChannels
-    exposing
-        ( StreamHandler
-        , streamDemultiplexer
-        , handleStream
-        , defaultCreate
-        , defaultUpdate
-        , defaultDelete
-        )
+import DjangoChannels exposing (streamDemultiplexer)
+import DjangoChannels.Binding as DCB
+import DjangoChannels.Initial as DCI
 import Json.Decode exposing (Decoder, string, bool)
 import Json.Decode.Pipeline exposing (decode, required)
-import Html exposing (Html, div)
+import Json.Encode
+import Html exposing (Html, div, text, ul, li, hr, input, button, span)
+import Html.Attributes exposing (value)
+import Html.Events exposing (onInput, onClick)
 import WebSocket
 
 
@@ -27,6 +24,7 @@ main =
 
 type alias Model =
     { todos : List ( String, Todo )
+    , todoInput : String
     }
 
 
@@ -38,44 +36,134 @@ type alias Todo =
 
 init : ( Model, Cmd Msg )
 init =
-    { todos = [] } ! []
+    ( { todos = [], todoInput = "" }
+    , Cmd.none
+    )
+
+
+todoView : ( String, Todo ) -> Html Msg
+todoView ( pk, todo ) =
+    li []
+        [ span []
+            [ text todo.description
+            , button [ onClick (ToggleDone pk todo) ]
+                [ text <|
+                    case todo.isDone of
+                        True ->
+                            "Not Done"
+
+                        False ->
+                            "Done"
+                ]
+            , button [ onClick (DeleteTodo pk) ] [ text "Delete" ]
+            ]
+        ]
 
 
 view : Model -> Html Msg
 view model =
-    div [] []
+    div []
+        [ ul []
+            (List.map
+                todoView
+                model.todos
+            )
+        , hr [] []
+        , input [ onInput TodoInput, value model.todoInput ] []
+        , button [ onClick CreateTodo ] [ text "New todo" ]
+        ]
 
 
 type Msg
     = NoOp
     | HandleWebSocket String
+    | TodoInput String
+    | CreateTodo
+    | DeleteTodo String
+    | ToggleDone String Todo
+
+
+type Stream
+    = TodoStream
+    | InitialStream
+    | NotFoundStream
+
+
+stringToStream : String -> Stream
+stringToStream str =
+    case str of
+        "todo" ->
+            TodoStream
+
+        "initial" ->
+            InitialStream
+
+        _ ->
+            NotFoundStream
 
 
 update : Msg -> Model -> ( Model, Cmd Msg )
 update msg model =
     case msg of
         NoOp ->
-            model ! []
+            ( model, Cmd.none )
 
         HandleWebSocket data ->
-            case streamDemultiplexer data of
-                "todo" ->
+            case streamDemultiplexer data stringToStream NotFoundStream of
+                TodoStream ->
                     let
                         todos =
-                            handleStream todoStreamHandler data model.todos
+                            DCB.handleBindingStream todoStreamHandler data model.todos
                     in
-                        { model | todos = todos } ! []
+                        ( { model | todos = todos }
+                        , Cmd.none
+                        )
 
-                "nothing" ->
-                    model ! []
+                InitialStream ->
+                    let
+                        todos =
+                            DCI.handleInitialStream initialTodoStreamHandler data
+                    in
+                        ( { model | todos = todos }
+                        , Cmd.none
+                        )
 
-                _ ->
-                    model ! []
+                NotFoundStream ->
+                    ( model
+                    , Cmd.none
+                    )
+
+        TodoInput input ->
+            ( { model | todoInput = input }
+            , Cmd.none
+            )
+
+        CreateTodo ->
+            let
+                newTodo =
+                    Todo model.todoInput False
+            in
+                ( { model | todoInput = "" }, DCB.createInstance todoStreamHandler newTodo )
+
+        ToggleDone pk todo ->
+            let
+                newTodo =
+                    { todo | isDone = not todo.isDone }
+            in
+                ( model, DCB.updateInstance todoStreamHandler pk newTodo )
+
+        DeleteTodo pk ->
+            ( model, DCB.deleteInstance todoStreamHandler pk )
+
+
+websocketServer : String
+websocketServer =
+    "ws://localhost:8000"
 
 
 subscriptions : Model -> Sub Msg
 subscriptions model =
-    WebSocket.listen "ws://localhost:8000" HandleWebSocket
+    WebSocket.listen websocketServer HandleWebSocket
 
 
 
@@ -90,15 +178,37 @@ todoDecoder =
 
 
 
+-- Encoders
+
+
+todoEncoder : Todo -> Json.Encode.Value
+todoEncoder instance =
+    Json.Encode.object
+        [ ( "description", Json.Encode.string instance.description )
+        , ( "is_done", Json.Encode.bool instance.isDone )
+        ]
+
+
+
 -- StreamHandlers
 
 
-todoStreamHandler : StreamHandler Todo String
+todoStreamHandler : DCB.BindingStreamHandler String Todo
 todoStreamHandler =
-    StreamHandler
+    DCB.BindingStreamHandler
+        websocketServer
         "todo"
         todoDecoder
+        todoEncoder
         string
-        defaultCreate
-        defaultUpdate
-        defaultDelete
+        Json.Encode.string
+        DCB.defaultCreate
+        DCB.defaultUpdate
+        DCB.defaultDelete
+
+
+initialTodoStreamHandler : DCI.InitialStreamHandler String Todo
+initialTodoStreamHandler =
+    DCI.InitialStreamHandler
+        todoDecoder
+        string
